@@ -1,0 +1,13 @@
+streamlit
+pillow
+numpy
+python-dotenv
+streamlit_drawable_canvas
+pyautogui
+google-genai
+langchain
+langchain-core
+google-generativeai
+sounddevice
+google-cloud-texttospeech
+google-cloud-speech 
