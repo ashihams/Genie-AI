@@ -12,8 +12,8 @@ An intelligent whiteboard application that uses AI to analyze and process whiteb
 
 1. Clone the repository:
 ```bash
-git clone <your-repository-url>
-cd ai_whiteboard
+git clone https://github.com/ashihams/Genie-AI.git
+cd Genie-AI
 ```
 
 2. Install dependencies:
