@@ -1,8 +1,8 @@
 # Must be the first Streamlit command
 import streamlit as st
 st.set_page_config(
-    page_title="Genie AI",
-    page_icon="🎤",
+    page_title="Genie AI - Omni Tutor",
+    page_icon="🧠",
     layout="wide",
     initial_sidebar_state="expanded"
 )
@@ -14,18 +14,21 @@ import google.generativeai as genai
 from google.cloud import speech_v1
 from google.cloud import texttospeech
 import tempfile
-import wave
-import io
-import sounddevice as sd
+from datetime import datetime
 from PIL import Image
 from streamlit_drawable_canvas import st_canvas
-from screen_analyzer import ScreenAnalyzer
+
+# Import custom modules
+from audio_utils import AudioRecorder, transcribe_audio, text_to_speech
+from ai_utils import get_ai_response, analyze_drawing, generate_practice_problem
+from whiteboard import Whiteboard
 
 # Load environment variables
 load_dotenv()
 GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
 GOOGLE_CREDENTIALS_FILE = os.getenv("GOOGLE_CREDENTIALS_FILE")
 
+# Initialize clients
 speech_client = None
 tts_client = None
 model = None
@@ -47,6 +50,7 @@ try:
 except Exception:
     pass
 
+# Constants
 LANGUAGES = {
     "English": {"code": "en-US", "voice": "en-US-Studio-O"},
     "Hindi": {"code": "hi-IN", "voice": "hi-IN-Standard-A"},
@@ -57,170 +61,22 @@ LANGUAGES = {
     "Chinese": {"code": "zh-CN", "voice": "zh-CN-Standard-A"}
 }
 
-class AudioRecorder:
-    def __init__(self):
-        self.sample_rate = 16000
-        self.channels = 1
-        self.recording = False
-        self.audio_data = []
-        self.stream = None
-        
-    def start_recording(self):
-        """Start recording audio"""
-        self.recording = True
-        self.audio_data = []
-        
-        # Start the input stream
-        self.stream = sd.InputStream(
-            samplerate=self.sample_rate,
-            channels=self.channels,
-            callback=self.callback
-        )
-        self.stream.start()
-        return True
-    
-    def stop_recording(self):
-        """Stop recording and return the audio data"""
-        if self.stream:
-            self.recording = False
-            self.stream.stop()
-            self.stream.close()
-            return self.get_wav_data()
-        return None
-    
-    def callback(self, indata, frames, time, status):
-        """Callback for audio stream"""
-        if self.recording:
-            self.audio_data.append(indata.copy())
-    
-    def get_wav_data(self):
-        """Convert recorded audio to WAV format"""
-        if not self.audio_data:
-            return None
-        
-        # Combine all audio chunks
-        audio = np.concatenate(self.audio_data)
-        
-        # Convert to WAV format
-        with io.BytesIO() as wav_io:
-            with wave.open(wav_io, 'wb') as wav_file:
-                wav_file.setnchannels(self.channels)
-                wav_file.setsampwidth(2)  # 16-bit audio
-                wav_file.setframerate(self.sample_rate)
-                wav_file.writeframes((audio * 32767).astype(np.int16).tobytes())
-            return wav_io.getvalue()
+SUBJECTS = {
+    "Mathematics": ["Algebra", "Geometry", "Calculus", "Statistics", "Trigonometry"],
+    "Physics": ["Mechanics", "Thermodynamics", "Electromagnetism", "Optics", "Quantum Physics"],
+    "Chemistry": ["Organic Chemistry", "Inorganic Chemistry", "Physical Chemistry", "Biochemistry"],
+    "Biology": ["Cell Biology", "Genetics", "Ecology", "Anatomy", "Evolution"],
+    "Computer Science": ["Programming", "Data Structures", "Algorithms", "Machine Learning", "Web Development"]
+}
 
-def transcribe_audio(audio_data, language_code="en-US"):
-    """Transcribe audio using Google Cloud Speech-to-Text"""
-    if not speech_client:
-        return "Speech-to-Text client not available"
-    
-    try:
-        # Create recognition audio
-        audio = speech_v1.RecognitionAudio(content=audio_data)
-        
-        # Configure recognition
-        config = speech_v1.RecognitionConfig(
-            encoding=speech_v1.RecognitionConfig.AudioEncoding.LINEAR16,
-            sample_rate_hertz=16000,
-            language_code=language_code,
-            enable_automatic_punctuation=True,
-            use_enhanced=True,
-            model="default",
-        )
-        
-        # Detect speech
-        response = speech_client.recognize(
-            config=config,
-            audio=audio
-        )
-        
-        # Get transcription
-        if response.results:
-            transcript = response.results[0].alternatives[0].transcript
-            return transcript
-        else:
-            return "No speech detected"
-        
-    except Exception as e:
-        return f"Error transcribing audio: {str(e)}"
-
-def get_ai_response(text, language="English"):
-    """Get response from Gemini"""
-    if not model:
-        return "AI model not available. Please check your GOOGLE_API_KEY."
-    
-    try:
-        # Simplified prompt
-        if language == "English":
-            prompt = text
-        else:
-            prompt = f"Please respond in {language} to this question: {text}"
-        
-        # Generate response with specific configuration
-        generation_config = genai.types.GenerationConfig(
-            max_output_tokens=150,
-            temperature=0.7,
-        )
-        
-        response = model.generate_content(
-            prompt,
-            generation_config=generation_config
-        )
-        
-        # Check if response was blocked or empty
-        if not response.text:
-            if hasattr(response, 'prompt_feedback'):
-                return f"Response blocked due to safety filters: {response.prompt_feedback}"
-            else:
-                return "Empty response received from AI model."
-        
-        return response.text.strip()
-        
-    except Exception as e:
-        # Return the actual error for debugging
-        error_msg = str(e)
-        return f"AI Error: {error_msg}"
-
-def text_to_speech(text, language_code="en-US", voice_name="en-US-Studio-O"):
-    """Convert text to speech using Google Cloud TTS"""
-    if not tts_client:
-        return None
-    
-    try:
-        # Configure voice
-        voice = texttospeech.VoiceSelectionParams(
-            language_code=language_code,
-            name=voice_name,
-            ssml_gender=texttospeech.SsmlVoiceGender.FEMALE
-        )
-        
-        # Configure audio
-        audio_config = texttospeech.AudioConfig(
-            audio_encoding=texttospeech.AudioEncoding.MP3,
-            speaking_rate=1.0,
-            pitch=0.0
-        )
-        
-        # Generate speech
-        synthesis_input = texttospeech.SynthesisInput(text=text)
-        response = tts_client.synthesize_speech(
-            input=synthesis_input,
-            voice=voice,
-            audio_config=audio_config
-        )
-        
-        # Save to temporary file
-        with tempfile.NamedTemporaryFile(delete=False, suffix=".mp3") as temp_audio:
-            temp_audio.write(response.audio_content)
-            return temp_audio.name
-            
-    except Exception as e:
-        return None
+DIFFICULTY_LEVELS = ["Beginner", "Intermediate", "Advanced", "Expert"]
 
 def initialize_session_state():
+    """Initialize all session state variables"""
     if "recorder" not in st.session_state:
         st.session_state.recorder = AudioRecorder()
+    if "whiteboard" not in st.session_state:
+        st.session_state.whiteboard = Whiteboard()
     if "is_recording" not in st.session_state:
         st.session_state.is_recording = False
     if "audio_file" not in st.session_state:
@@ -229,23 +85,61 @@ def initialize_session_state():
         st.session_state.selected_language = "English"
     if "last_response" not in st.session_state:
         st.session_state.last_response = ""
-    if "drawing_mode" not in st.session_state:
-        st.session_state.drawing_mode = "freedraw"
+    if "conversation_history" not in st.session_state:
+        st.session_state.conversation_history = []
+    if "current_subject" not in st.session_state:
+        st.session_state.current_subject = "Mathematics"
+    if "current_topic" not in st.session_state:
+        st.session_state.current_topic = "Algebra"
+    if "difficulty_level" not in st.session_state:
+        st.session_state.difficulty_level = "Intermediate"
+    if "current_problem" not in st.session_state:
+        st.session_state.current_problem = ""
     if "selected_color" not in st.session_state:
         st.session_state.selected_color = "#000000"
     if "stroke_width" not in st.session_state:
-        st.session_state.stroke_width = 3
-    if "analyzer" not in st.session_state:
-        st.session_state.analyzer = ScreenAnalyzer()
+        st.session_state.stroke_width = 5
+    if "drawing_mode" not in st.session_state:
+        st.session_state.drawing_mode = "freedraw"
+    if "clear_canvas_counter" not in st.session_state:
+        st.session_state.clear_canvas_counter = 0
 
 def main():
     initialize_session_state()
     
-    # Sidebar for voice assistant
+    # Sidebar for voice assistant and settings
     with st.sidebar:
-        # Language selection at the top
+        st.markdown("### 🧠 Omni Tutor Settings")
+        
+        # Subject and topic selection
+        selected_subject = st.selectbox(
+            "📚 Subject",
+            options=list(SUBJECTS.keys()),
+            index=list(SUBJECTS.keys()).index(st.session_state.current_subject)
+        )
+        
+        if selected_subject != st.session_state.current_subject:
+            st.session_state.current_subject = selected_subject
+            st.session_state.current_topic = SUBJECTS[selected_subject][0]
+        
+        selected_topic = st.selectbox(
+            "📖 Topic",
+            options=SUBJECTS[selected_subject],
+            index=SUBJECTS[selected_subject].index(st.session_state.current_topic) if st.session_state.current_topic in SUBJECTS[selected_subject] else 0
+        )
+        st.session_state.current_topic = selected_topic
+        
+        # Difficulty level
+        difficulty = st.selectbox(
+            "🎯 Difficulty Level",
+            options=DIFFICULTY_LEVELS,
+            index=DIFFICULTY_LEVELS.index(st.session_state.difficulty_level)
+        )
+        st.session_state.difficulty_level = difficulty
+        
+        # Language selection
         selected_language = st.selectbox(
-            "Select Language",
+            "🌍 Select Language",
             options=list(LANGUAGES.keys()),
             index=list(LANGUAGES.keys()).index(st.session_state.selected_language)
         )
@@ -253,10 +147,12 @@ def main():
         if selected_language != st.session_state.selected_language:
             st.session_state.selected_language = selected_language
         
-        # Add some spacing
-        st.markdown("<br>", unsafe_allow_html=True)
+        st.markdown("---")
         
-        # Google Assistant-like button in the center
+        # Voice Assistant Section
+        st.markdown("### 🎤 Voice Assistant")
+        
+        # Google Assistant-like button styling
         button_style = """
             <style>
             div.stButton > button {
@@ -276,6 +172,9 @@ def main():
                 background-color: #3367D6;
                 border: none;
             }
+            div.stButton > button:active {
+                background-color: #ea4335;
+            }
             </style>
         """
         st.markdown(button_style, unsafe_allow_html=True)
@@ -283,14 +182,14 @@ def main():
         col1, col2, col3 = st.columns([1, 1, 1])
         with col2:
             button_label = "🎤" if not st.session_state.is_recording else "⏹️"
-            if st.button(button_label, key="toggle_recording"):
+            if st.button(button_label, key="sidebar_toggle_recording"):
                 if not st.session_state.is_recording:
                     # Start recording
                     st.session_state.is_recording = True
                     st.session_state.recorder.start_recording()
                     st.rerun()
                 else:
-                    # Stop recording and process silently
+                    # Stop recording and process
                     st.session_state.is_recording = False
                     audio_data = st.session_state.recorder.stop_recording()
                     
@@ -299,81 +198,390 @@ def main():
                         lang_code = LANGUAGES[st.session_state.selected_language]["code"]
                         voice_name = LANGUAGES[st.session_state.selected_language]["voice"]
                         
-                        # Process voice silently in background
                         # Convert speech to text
-                        text = transcribe_audio(audio_data, lang_code)
+                        text = transcribe_audio(audio_data, lang_code, speech_client)
                         
                         if text and text != "No speech detected":
+                            # Add to conversation history
+                            st.session_state.conversation_history.append({
+                                "role": "student",
+                                "content": text,
+                                "timestamp": datetime.now()
+                            })
+                            
+                            # Get tutoring context
+                            context = f"Subject: {st.session_state.current_subject}, Topic: {st.session_state.current_topic}, Level: {st.session_state.difficulty_level}"
+                            if st.session_state.current_problem:
+                                context += f"\nCurrent Problem: {st.session_state.current_problem[:200]}..."
+                            
                             # Get AI response
-                            response = get_ai_response(text, st.session_state.selected_language)
+                            response = get_ai_response(text, st.session_state.selected_language, model)
                             st.session_state.last_response = response
                             
-                            # Generate speech
-                            audio_file = text_to_speech(response, lang_code, voice_name)
+                            # Add to conversation history
+                            st.session_state.conversation_history.append({
+                                "role": "tutor",
+                                "content": response,
+                                "timestamp": datetime.now()
+                            })
                             
+                            # Generate speech
+                            audio_file = text_to_speech(response, lang_code, voice_name, tts_client)
                             if audio_file:
                                 st.session_state.audio_file = audio_file
                     st.rerun()
         
-        # Status indicator in the center
-        status_text = "🔴 Listening..." if st.session_state.is_recording else "Tap to speak"
-        st.markdown(f"<div style='text-align: center; margin-top: 10px;'>{status_text}</div>", unsafe_allow_html=True)
+        # Status indicator
+        status_text = "🔴 Listening..." if st.session_state.is_recording else "🎤 Tap to speak"
+        st.markdown(f"<div style='text-align: center; margin-top: 10px; font-size: 14px; color: #666;'>{status_text}</div>", unsafe_allow_html=True)
         
-        # Add spacing before response
-        st.markdown("<br><br>", unsafe_allow_html=True)
+        # Add some spacing
+        st.markdown("<br>", unsafe_allow_html=True)
         
-        # Auto-play audio response and show text (Google Assistant style)
+        # Show last response and auto-play audio
         if st.session_state.last_response and st.session_state.audio_file:
-            # Show response text
-            st.markdown(f"<div style='background-color: #f0f2f6; padding: 10px; border-radius: 10px; margin: 10px 0;'>{st.session_state.last_response}</div>", unsafe_allow_html=True)
-            # Auto-play audio
+            st.markdown("**🧠 Tutor Response:**")
+            st.markdown(f"<div style='background-color: #f0f2f6; padding: 10px; border-radius: 10px; margin: 10px 0; font-size: 14px;'>{st.session_state.last_response}</div>", unsafe_allow_html=True)
             st.audio(st.session_state.audio_file, format="audio/mp3", autoplay=True)
     
-    # Main area for whiteboard
-    st.markdown("<h1 style='text-align: left; color: #1E88E5;'>Genie AI</h1>", unsafe_allow_html=True)
+    # Main content area
+    st.markdown("<h1 style='text-align: center; color: #1E88E5; margin-bottom: 10px;'>🧠 Genie AI - Omni Tutor</h1>", unsafe_allow_html=True)
+    st.markdown(f"<h3 style='text-align: center; color: #666; margin-bottom: 30px;'>Learning {st.session_state.current_subject} • {st.session_state.current_topic} • {st.session_state.difficulty_level}</h3>", unsafe_allow_html=True)
     
-    # Toolbar with drawing options
-    col1, col2, col3 = st.columns([2, 2, 1])
-    with col1:
-        mode = st.radio("", ["Draw", "Erase", "Clear"], horizontal=True)
-        st.session_state.selected_color = st.color_picker("Select Color", st.session_state.selected_color)
-        st.session_state.stroke_width = st.slider("Stroke Width", 1, 20, st.session_state.stroke_width)
+    # Main area tabs
+    tab1, tab2, tab3 = st.tabs(["💬 Chat with Tutor", "📝 Interactive Whiteboard", "📊 Progress & Stats"])
     
-    # Drawing mode handling
-    drawing_mode = "freedraw"
-    if mode == "Erase":
-        drawing_mode = "freedraw"
-        st.session_state.selected_color = "#FFFFFF"
-    elif mode == "Clear":
-        st.session_state.selected_color = "#FFFFFF"
-        st.session_state.stroke_width = 50
-    
-    # Drawing canvas
-    canvas_result = st_canvas(
-        fill_color="rgba(255, 255, 255, 0.0)",
-        stroke_width=st.session_state.stroke_width,
-        stroke_color=st.session_state.selected_color,
-        background_color="#FFFFFF",
-        width=800,
-        height=500,
-        drawing_mode=drawing_mode,
-        key="whiteboard_canvas"
-    )
-    
-    # Analyze button logic
-    if canvas_result.image_data is not None and st.button("Analyze"):
-        with st.spinner("Analyzing your drawing..."):
-            # Convert canvas image data to PIL Image
-            image = Image.fromarray((canvas_result.image_data * 255).astype(np.uint8))
+    with tab1:
+        st.markdown("### 💬 Tutoring Conversation")
+        
+        # Display conversation history
+        chat_container = st.container()
+        with chat_container:
+            for i, message in enumerate(st.session_state.conversation_history[-15:]):  # Show last 15 messages
+                if message["role"] == "student":
+                    st.markdown(f"""
+                    <div style='background-color: #e3f2fd; padding: 15px; border-radius: 15px; margin: 10px 0; margin-left: 50px; border-left: 4px solid #2196f3;'>
+                        <strong>👤 You:</strong> {message['content']}
+                    </div>
+                    """, unsafe_allow_html=True)
+                else:
+                    st.markdown(f"""
+                    <div style='background-color: #f8f9fa; padding: 15px; border-radius: 15px; margin: 10px 0; margin-right: 50px; border-left: 4px solid #4caf50;'>
+                        <strong>🧠 Tutor:</strong> {message['content']}
+                    </div>
+                    """, unsafe_allow_html=True)
+        
+        # Text input for typing
+        st.markdown("---")
+        user_input = st.text_area("💭 Type your question or share your work:", height=100, placeholder="Ask me anything about the topic, share your solution, or request help with a specific concept...")
+        
+        col1, col2 = st.columns([3, 1])
+        with col2:
+            send_button = st.button("Send 📤", type="primary", use_container_width=True)
+        
+        if send_button and user_input:
+            # Add to conversation history
+            st.session_state.conversation_history.append({
+                "role": "student",
+                "content": user_input,
+                "timestamp": datetime.now()
+            })
             
-            # Save image and send to analyzer
-            image_path = "whiteboard_capture.png"
-            image.save(image_path)
-            result = st.session_state.analyzer.analyze_screen(image_path)
-            st.success("Analysis Complete")
-            st.markdown("### Analysis Result")
-            st.write(result)
+            # Get tutoring context
+            context = f"Subject: {st.session_state.current_subject}, Topic: {st.session_state.current_topic}, Level: {st.session_state.difficulty_level}"
+            if st.session_state.current_problem:
+                context += f"\nCurrent Problem: {st.session_state.current_problem[:200]}..."
+            
+            # Get AI response
+            with st.spinner("🤔 Thinking..."):
+                response = get_ai_response(user_input, st.session_state.selected_language, model)
+            
+            # Add to conversation history
+            st.session_state.conversation_history.append({
+                "role": "tutor",
+                "content": response,
+                "timestamp": datetime.now()
+            })
+            
+            st.rerun()
     
+    with tab2:
+        st.markdown("### 📝 Interactive Whiteboard")
+
+        # Generate new problem button
+        if st.button("📝 Generate New Problem", type="primary", use_container_width=True):
+            with st.spinner("Creating a personalized problem..."):
+                problem = generate_practice_problem(
+                    st.session_state.current_subject,
+                    st.session_state.current_topic,
+                    st.session_state.difficulty_level,
+                    model
+                )
+                st.session_state.current_problem = problem
+
+                # Get language settings for voice
+                lang_code = LANGUAGES[st.session_state.selected_language]["code"]
+                voice_name = LANGUAGES[st.session_state.selected_language]["voice"]
+
+                # Generate voice guidance
+                guidance = f"Here's your practice problem: {problem}. Please draw your solution on the whiteboard. I'll guide you through each step."
+                audio_file = text_to_speech(guidance, lang_code, voice_name, tts_client)
+                if audio_file:
+                    st.session_state.audio_file = audio_file
+
+                st.session_state.conversation_history.append({
+                    "role": "tutor",
+                    "content": f"📝 **New Practice Problem:**\n\n{problem}",
+                    "timestamp": datetime.now()
+                })
+                st.rerun()
+
+        # Display current problem if exists
+        if st.session_state.current_problem:
+            st.markdown(f"""
+            <div style='background-color: #f8f9fa; padding: 20px; border-radius: 15px; margin-bottom: 20px; border-left: 4px solid #4285F4;'>
+                <strong>📝 Current Problem:</strong><br><br>
+                {st.session_state.current_problem}
+            </div>
+            """, unsafe_allow_html=True)
+
+        # Whiteboard controls
+        st.markdown("### 🎨 Drawing Controls")
+        col1, col2, col3, col4 = st.columns([2, 2, 2, 1])
+        
+        with col1:
+            drawing_mode = st.selectbox(
+                "Drawing Tool", 
+                ["freedraw", "line", "rect", "circle"],
+                key="drawing_tool"
+            )
+        
+        with col2:
+            if st.checkbox("Eraser Mode", key="eraser_mode"):
+                stroke_color = "#FFFFFF"  # White for erasing
+                st.markdown("**🗑️ Eraser Active**")
+            else:
+                stroke_color = st.color_picker("Pen Color", "#000000", key="pen_color")
+        
+        with col3:
+            stroke_width = st.slider("Brush Size", 1, 20, 5, key="brush_size")
+        
+        with col4:
+            if st.button("🗑️ Clear", type="secondary", use_container_width=True):
+                st.session_state.clear_canvas_counter += 1
+                st.rerun()
+
+        # Canvas container with better styling
+        st.markdown("### ✏️ Draw Your Solution Below")
+        
+        # Enhanced CSS for canvas visibility
+        st.markdown("""
+        <style>
+        .stCanvas > div {
+            border: 3px solid #4285F4 !important;
+            border-radius: 10px !important;
+            box-shadow: 0 4px 12px rgba(66, 133, 244, 0.3) !important;
+            background-color: white !important;
+            margin: 20px 0 !important;
+        }
+        .stCanvas canvas {
+            border-radius: 8px !important;
+            background-color: white !important;
+        }
+        </style>
+        """, unsafe_allow_html=True)
+
+        # Create a container for the canvas
+        canvas_container = st.container()
+        
+        with canvas_container:
+            # Main canvas with improved settings
+            try:
+                canvas_result = st_canvas(
+                    fill_color="rgba(255, 255, 255, 0)",  # Transparent fill
+                    stroke_width=stroke_width,
+                    stroke_color=stroke_color,
+                    background_color="#FFFFFF",  # White background
+                    background_image=None,
+                    update_streamlit=True,
+                    height=400,  # Fixed height
+                    width=None,  # Auto width (responsive)
+                    drawing_mode=drawing_mode,
+                    point_display_radius=3,
+                    key=f"main_canvas_{st.session_state.clear_canvas_counter}",
+                    display_toolbar=False,  # Hide default toolbar since we have custom controls
+                )
+                
+                # Show canvas info
+                st.info("👆 Draw your solution above. Use the controls to change tools, colors, and brush size.")
+                
+            except Exception as e:
+                st.error(f"Canvas error: {str(e)}")
+                st.markdown("""
+                **Troubleshooting Tips:**
+                1. Make sure `streamlit-drawable-canvas` is installed: `pip install streamlit-drawable-canvas`
+                2. Refresh the page if the canvas doesn't appear
+                3. Try clearing your browser cache
+                """)
+                canvas_result = None
+
+        # Analysis section - only show if canvas has content
+        st.markdown("---")
+        
+        if canvas_result is not None and canvas_result.image_data is not None:
+            # Check if there's actual drawing (not just white canvas)
+            image_array = canvas_result.image_data
+            has_drawing = not np.all(image_array == 255)  # Check if not all white
+            
+            if has_drawing:
+                col1, col2, col3 = st.columns([1, 2, 1])
+                with col2:
+                    if st.button("🔍 Analyze My Drawing", type="primary", use_container_width=True):
+                        with st.spinner("🤔 Analyzing your solution..."):
+                            try:
+                                # Convert canvas image data to PIL Image
+                                image = Image.fromarray(image_array.astype(np.uint8))
+                                
+                                # Save image temporarily
+                                with tempfile.NamedTemporaryFile(delete=False, suffix=".png") as temp_file:
+                                    image.save(temp_file.name)
+                                    temp_file_path = temp_file.name
+                                    
+                                    # Get tutoring context
+                                    context = f"Subject: {st.session_state.current_subject}, Topic: {st.session_state.current_topic}, Level: {st.session_state.difficulty_level}"
+                                    if st.session_state.current_problem:
+                                        context += f"\nCurrent Problem: {st.session_state.current_problem}"
+                                    
+                                    # Analyze the drawing
+                                    result = analyze_drawing(temp_file_path, context, model)
+                                    
+                                    if result:
+                                        # Get language settings for voice
+                                        lang_code = LANGUAGES[st.session_state.selected_language]["code"]
+                                        voice_name = LANGUAGES[st.session_state.selected_language]["voice"]
+                                        
+                                        # Generate voice feedback
+                                        audio_file = text_to_speech(result, lang_code, voice_name, tts_client)
+                                        if audio_file:
+                                            st.session_state.audio_file = audio_file
+                                        
+                                        # Add to conversation history
+                                        st.session_state.conversation_history.append({
+                                            "role": "student",
+                                            "content": "I've drawn my solution on the whiteboard.",
+                                            "timestamp": datetime.now()
+                                        })
+                                        
+                                        st.session_state.conversation_history.append({
+                                            "role": "tutor",
+                                            "content": f"📝 **Drawing Analysis:**\n\n{result}",
+                                            "timestamp": datetime.now()
+                                        })
+                                        
+                                        # Display analysis result
+                                        st.success("✅ Analysis Complete!")
+                                        st.markdown(f"""
+                                        <div style='background-color: #e8f5e8; padding: 20px; border-radius: 15px; border-left: 4px solid #4caf50; margin: 20px 0;'>
+                                            <strong>🧠 AI Tutor Feedback:</strong><br><br>
+                                            {result}
+                                        </div>
+                                        """, unsafe_allow_html=True)
+                                        
+                                        # Auto-play audio feedback
+                                        if st.session_state.audio_file:
+                                            st.audio(st.session_state.audio_file, format="audio/mp3", autoplay=True)
+                                    
+                                    # Clean up temp file
+                                    if os.path.exists(temp_file_path):
+                                        os.unlink(temp_file_path)
+                            
+                            except Exception as e:
+                                st.error(f"Error analyzing drawing: {str(e)}")
+                                st.markdown("Please try drawing again or check your internet connection.")
+            else:
+                st.info("🎨 Draw something on the canvas above to enable analysis!")
+        else:
+            st.info("🎨 The canvas will appear here. If you don't see it, try refreshing the page.")
+        
+        # Drawing tips
+        with st.expander("💡 Drawing Tips"):
+            st.markdown("""
+            **How to use the whiteboard:**
+            - **Freedraw**: Draw freehand lines and curves
+            - **Line**: Draw straight lines
+            - **Rectangle**: Draw rectangular shapes  
+            - **Circle**: Draw circular shapes
+            - **Eraser**: Toggle eraser mode to remove parts of your drawing
+            - **Colors**: Choose different colors for your pen
+            - **Brush Size**: Adjust the thickness of your strokes
+            
+            **For math problems:**
+            - Write equations clearly
+            - Draw diagrams and graphs
+            - Show your work step by step
+            - Use different colors to highlight important parts
+            """)
     
+    with tab3:
+        st.markdown("### 📊 Your Learning Journey")
+        
+        # Session statistics
+        col1, col2, col3, col4 = st.columns(4)
+        
+        with col1:
+            questions_asked = len([msg for msg in st.session_state.conversation_history if msg["role"] == "student"])
+            st.metric("❓ Questions Asked", questions_asked)
+        
+        with col2:
+            responses_given = len([msg for msg in st.session_state.conversation_history if msg["role"] == "tutor"])
+            st.metric("💬 Tutor Responses", responses_given)
+        
+        with col3:
+            if st.session_state.conversation_history:
+                session_time = datetime.now() - st.session_state.conversation_history[0]["timestamp"]
+                minutes = session_time.seconds // 60
+                st.metric("⏱️ Session Time", f"{minutes} min")
+            else:
+                st.metric("⏱️ Session Time", "0 min")
+        
+        with col4:
+            current_streak = len(st.session_state.conversation_history) // 2  # Rough estimate
+            st.metric("🔥 Interaction Streak", current_streak)
+        
+        # Subject focus
+        st.markdown("---")
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            st.markdown("#### 📚 Current Focus")
+            st.info(f"""
+            **Subject:** {st.session_state.current_subject}  
+            **Topic:** {st.session_state.current_topic}  
+            **Level:** {st.session_state.difficulty_level}
+            """)
+        
+        with col2:
+            st.markdown("#### 🎯 Session Summary")
+            if st.session_state.conversation_history:
+                recent_topics = [msg['content'][:50] + "..." for msg in st.session_state.conversation_history[-3:] if msg['role'] == 'student']
+                if recent_topics:
+                    st.write("**Recent questions:**")
+                    for topic in recent_topics:
+                        st.write(f"• {topic}")
+                else:
+                    st.write("Start asking questions to see your progress!")
+            else:
+                st.write("Your learning session is just beginning! 🌟")
+        
+        # Motivational section
+        st.markdown("---")
+        st.markdown("""
+        <div style='background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); padding: 25px; border-radius: 15px; color: white; text-align: center; margin: 20px 0;'>
+            <h2>🌟 Keep Up the Great Work!</h2>
+            <p style='font-size: 18px; margin: 15px 0;'>Every question you ask brings you closer to mastery.</p>
+            <p style='font-size: 16px;'>I'm here to guide you through every step of your learning journey!</p>
+        </div>
+        """, unsafe_allow_html=True)
+
 if __name__ == "__main__":
     main()
