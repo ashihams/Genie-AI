@@ -71,6 +71,14 @@ SUBJECTS = {
 
 DIFFICULTY_LEVELS = ["Beginner", "Intermediate", "Advanced", "Expert"]
 
+def generate_solution_response(problem, selected_language, model):
+    if not problem:
+        return "No problem available to generate a solution for."
+    
+    prompt = f"Provide a detailed, step-by-step solution for the following problem, appropriate for a student learning {st.session_state.current_subject} at a {st.session_state.difficulty_level} level:\n\nProblem: {problem}"
+    response = get_ai_response(prompt, selected_language, model)
+    return response
+
 def initialize_session_state():
     """Initialize all session state variables"""
     if "recorder" not in st.session_state:
@@ -306,42 +314,39 @@ def main():
             st.rerun()
     
     with tab2:
-        st.markdown("### 📝 Interactive Whiteboard")
-
-        # Generate new problem button
-        if st.button("📝 Generate New Problem", type="primary", use_container_width=True):
-            with st.spinner("Creating a personalized problem..."):
-                problem = generate_practice_problem(
-                    st.session_state.current_subject,
-                    st.session_state.current_topic,
-                    st.session_state.difficulty_level,
-                    model
-                )
-                st.session_state.current_problem = problem
-
-                # Get language settings for voice
-                lang_code = LANGUAGES[st.session_state.selected_language]["code"]
-                voice_name = LANGUAGES[st.session_state.selected_language]["voice"]
-
-                # Generate voice guidance
-                guidance = f"Here's your practice problem: {problem}. Please draw your solution on the whiteboard. I'll guide you through each step."
-                audio_file = text_to_speech(guidance, lang_code, voice_name, tts_client)
-                if audio_file:
-                    st.session_state.audio_file = audio_file
-
-                st.session_state.conversation_history.append({
-                    "role": "tutor",
-                    "content": f"📝 **New Practice Problem:**\n\n{problem}",
-                    "timestamp": datetime.now()
-                })
-                st.rerun()
+        # Header and Generate Problem button
+        col_title, col_button = st.columns([4, 1]) # Adjust column ratios as needed
+        with col_title:
+            st.markdown("### 📝 Interactive Whiteboard")
+        with col_button:
+            # Add custom CSS for button alignment
+            st.markdown("""
+            <style>
+            div[data-testid="stColumn"] > div > div > button {
+                margin-top: 20px; /* Adjust this value to align with the title */
+                float: right; /* Pushes the button to the right within its column */
+            }
+            </style>
+            """, unsafe_allow_html=True)
+            
+            if st.button("📝 Generate New Problem", type="primary", use_container_width=False, key="generate_problem_button"): # Set use_container_width to False for better control
+                with st.spinner("Creating a personalized problem..."):
+                    problem = generate_practice_problem(
+                        st.session_state.current_subject,
+                        st.session_state.current_topic,
+                        st.session_state.difficulty_level,
+                        model
+                    )
+                    st.session_state.current_problem = problem
+                    st.session_state.clear_canvas_counter += 1
+                    st.rerun()
 
         # Display current problem if exists
         if st.session_state.current_problem:
             st.markdown(f"""
             <div style='background-color: #f8f9fa; padding: 20px; border-radius: 15px; margin-bottom: 20px; border-left: 4px solid #4285F4;'>
                 <strong>📝 Current Problem:</strong><br><br>
-                {st.session_state.current_problem}
+                {st.session_state.current_problem.split('SOLUTION_STEPS')[0].strip()}
             </div>
             """, unsafe_allow_html=True)
 
@@ -404,16 +409,13 @@ def main():
                     background_color="#FFFFFF",  # White background
                     background_image=None,
                     update_streamlit=True,
-                    height=400,  # Fixed height
-                    width=None,  # Auto width (responsive)
+                    height=800,  # Fixed height
+                    width=900,  # Increased width
                     drawing_mode=drawing_mode,
                     point_display_radius=3,
                     key=f"main_canvas_{st.session_state.clear_canvas_counter}",
                     display_toolbar=False,  # Hide default toolbar since we have custom controls
                 )
-                
-                # Show canvas info
-                st.info("👆 Draw your solution above. Use the controls to change tools, colors, and brush size.")
                 
             except Exception as e:
                 st.error(f"Canvas error: {str(e)}")
@@ -434,9 +436,9 @@ def main():
             has_drawing = not np.all(image_array == 255)  # Check if not all white
             
             if has_drawing:
-                col1, col2, col3 = st.columns([1, 2, 1])
-                with col2:
-                    if st.button("🔍 Analyze My Drawing", type="primary", use_container_width=True):
+                col_analyze, col_solution = st.columns(2)
+                with col_analyze:
+                    if st.button("🔍 Analyze", type="primary", use_container_width=True):
                         with st.spinner("🤔 Analyzing your solution..."):
                             try:
                                 # Convert canvas image data to PIL Image
@@ -498,29 +500,31 @@ def main():
                             except Exception as e:
                                 st.error(f"Error analyzing drawing: {str(e)}")
                                 st.markdown("Please try drawing again or check your internet connection.")
+                with col_solution:
+                    if st.button("💡 Generate Solution", type="secondary", use_container_width=True):
+                        with st.spinner("✍️ Generating solution..."):
+                            solution = generate_solution_response(
+                                st.session_state.current_problem,
+                                st.session_state.selected_language,
+                                model
+                            )
+                            if solution:
+                                st.session_state.conversation_history.append({
+                                    "role": "tutor",
+                                    "content": f"Here's a step-by-step solution to the problem:\n\n{solution}",
+                                    "timestamp": datetime.now()
+                                })
+                                # Generate speech for the solution
+                                lang_code = LANGUAGES[st.session_state.selected_language]["code"]
+                                voice_name = LANGUAGES[st.session_state.selected_language]["voice"]
+                                audio_file = text_to_speech(solution, lang_code, voice_name, tts_client)
+                                if audio_file:
+                                    st.session_state.audio_file = audio_file
+                            st.rerun()
             else:
                 st.info("🎨 Draw something on the canvas above to enable analysis!")
         else:
             st.info("🎨 The canvas will appear here. If you don't see it, try refreshing the page.")
-        
-        # Drawing tips
-        with st.expander("💡 Drawing Tips"):
-            st.markdown("""
-            **How to use the whiteboard:**
-            - **Freedraw**: Draw freehand lines and curves
-            - **Line**: Draw straight lines
-            - **Rectangle**: Draw rectangular shapes  
-            - **Circle**: Draw circular shapes
-            - **Eraser**: Toggle eraser mode to remove parts of your drawing
-            - **Colors**: Choose different colors for your pen
-            - **Brush Size**: Adjust the thickness of your strokes
-            
-            **For math problems:**
-            - Write equations clearly
-            - Draw diagrams and graphs
-            - Show your work step by step
-            - Use different colors to highlight important parts
-            """)
     
     with tab3:
         st.markdown("### 📊 Your Learning Journey")
