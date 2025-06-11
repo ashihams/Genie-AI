@@ -10,3 +10,5 @@ pyautogui
 langchain
 langchain-core 
 audio-recorder-streamlit
+portaudio19-dev
+python3-pyaudio 
