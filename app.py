@@ -16,10 +16,17 @@ from google.cloud import texttospeech
 import tempfile
 import wave
 import io
-import sounddevice as sd
 from PIL import Image
 from streamlit_drawable_canvas import st_canvas
 from screen_analyzer import ScreenAnalyzer
+
+# Try to import sounddevice, but don't fail if it's not available
+try:
+    import sounddevice as sd
+    AUDIO_AVAILABLE = True
+except OSError:
+    AUDIO_AVAILABLE = False
+    st.warning("Audio recording is not available in this environment. Some features may be limited.")
 
 # Load environment variables
 load_dotenv()
@@ -67,20 +74,31 @@ class AudioRecorder:
         
     def start_recording(self):
         """Start recording audio"""
+        if not AUDIO_AVAILABLE:
+            st.error("Audio recording is not available in this environment")
+            return False
+            
         self.recording = True
         self.audio_data = []
         
-        # Start the input stream
-        self.stream = sd.InputStream(
-            samplerate=self.sample_rate,
-            channels=self.channels,
-            callback=self.callback
-        )
-        self.stream.start()
-        return True
+        try:
+            # Start the input stream
+            self.stream = sd.InputStream(
+                samplerate=self.sample_rate,
+                channels=self.channels,
+                callback=self.callback
+            )
+            self.stream.start()
+            return True
+        except Exception as e:
+            st.error(f"Error starting audio recording: {str(e)}")
+            return False
     
     def stop_recording(self):
         """Stop recording and return the audio data"""
+        if not AUDIO_AVAILABLE:
+            return None
+            
         if self.stream:
             self.recording = False
             self.stream.stop()
