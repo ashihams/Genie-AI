@@ -111,6 +111,8 @@ def initialize_session_state():
         st.session_state.drawing_mode = "freedraw"
     if "clear_canvas_counter" not in st.session_state:
         st.session_state.clear_canvas_counter = 0
+    if "current_solution" not in st.session_state:
+        st.session_state.current_solution = ""
 
 def main():
     initialize_session_state()
@@ -329,7 +331,7 @@ def main():
             </style>
             """, unsafe_allow_html=True)
             
-            if st.button("📝 Generate New Problem", type="primary", use_container_width=False, key="generate_problem_button"): # Set use_container_width to False for better control
+            if st.button("📝 Question", type="primary", use_container_width=False, key="generate_problem_button"): # Set use_container_width to False for better control
                 with st.spinner("Creating a personalized problem..."):
                     problem = generate_practice_problem(
                         st.session_state.current_subject,
@@ -489,43 +491,52 @@ def main():
                                         </div>
                                         """, unsafe_allow_html=True)
                                         
-                                        # Auto-play audio feedback
-                                        if st.session_state.audio_file:
-                                            st.audio(st.session_state.audio_file, format="audio/mp3", autoplay=True)
-                                    
-                                    # Clean up temp file
-                                    if os.path.exists(temp_file_path):
-                                        os.unlink(temp_file_path)
+                                        # Clean up temp file
+                                        if os.path.exists(temp_file_path):
+                                            os.unlink(temp_file_path)
                             
                             except Exception as e:
                                 st.error(f"Error analyzing drawing: {str(e)}")
                                 st.markdown("Please try drawing again or check your internet connection.")
                 with col_solution:
-                    if st.button("💡 Generate Solution", type="secondary", use_container_width=True):
+                    if st.button("💡 Solution", type="secondary", use_container_width=True):
                         with st.spinner("✍️ Generating solution..."):
-                            solution = generate_solution_response(
-                                st.session_state.current_problem,
-                                st.session_state.selected_language,
-                                model
-                            )
-                            if solution:
-                                st.session_state.conversation_history.append({
-                                    "role": "tutor",
-                                    "content": f"Here's a step-by-step solution to the problem:\n\n{solution}",
-                                    "timestamp": datetime.now()
-                                })
-                                # Generate speech for the solution
-                                lang_code = LANGUAGES[st.session_state.selected_language]["code"]
-                                voice_name = LANGUAGES[st.session_state.selected_language]["voice"]
-                                audio_file = text_to_speech(solution, lang_code, voice_name, tts_client)
-                                if audio_file:
-                                    st.session_state.audio_file = audio_file
-                            st.rerun()
+                            try:
+                                solution = generate_solution_response(
+                                    st.session_state.current_problem,
+                                    st.session_state.selected_language,
+                                    model
+                                )
+                                if solution:
+                                    st.session_state.conversation_history.append({
+                                        "role": "tutor",
+                                        "content": f"Here's a step-by-step solution to the problem:\n\n{solution}",
+                                        "timestamp": datetime.now()
+                                    })
+                                    st.session_state.current_solution = solution
+                                
+                            except Exception as e:
+                                st.error(f"Error generating solution: {str(e)}")
+                                st.markdown("Please try again or check your internet connection.")
             else:
                 st.info("🎨 Draw something on the canvas above to enable analysis!")
         else:
             st.info("🎨 The canvas will appear here. If you don't see it, try refreshing the page.")
-    
+
+        # Display generated solution if available
+        if st.session_state.current_solution:
+            st.markdown("### ✅ AI Tutor Solution")
+            st.markdown(f"""
+            <div style='background-color: #e8f5e8; padding: 20px; border-radius: 15px; border-left: 4px solid #4caf50; margin: 20px 0;'>
+                {st.session_state.current_solution}
+            </div>
+            """, unsafe_allow_html=True)
+
+            # Optional: Clear solution after a new problem is generated
+            if st.session_state.current_problem and st.session_state.current_solution and st.session_state.current_problem != st.session_state.get("last_solution_problem", ""):
+                st.session_state.current_solution = ""
+                st.session_state.last_solution_problem = st.session_state.current_problem
+
     with tab3:
         st.markdown("### 📊 Your Learning Journey")
         
