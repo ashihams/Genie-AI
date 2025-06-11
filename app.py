@@ -16,17 +16,10 @@ from google.cloud import texttospeech
 import tempfile
 import wave
 import io
+import base64
 from PIL import Image
 from streamlit_drawable_canvas import st_canvas
 from screen_analyzer import ScreenAnalyzer
-
-# Try to import sounddevice, but don't fail if it's not available
-try:
-    import sounddevice as sd
-    AUDIO_AVAILABLE = True
-except OSError:
-    AUDIO_AVAILABLE = False
-    st.warning("Audio recording is not available in this environment. Some features may be limited.")
 
 # Load environment variables
 load_dotenv()
@@ -64,181 +57,7 @@ LANGUAGES = {
     "Chinese": {"code": "zh-CN", "voice": "zh-CN-Standard-A"}
 }
 
-class AudioRecorder:
-    def __init__(self):
-        self.sample_rate = 16000
-        self.channels = 1
-        self.recording = False
-        self.audio_data = []
-        self.stream = None
-        
-    def start_recording(self):
-        """Start recording audio"""
-        if not AUDIO_AVAILABLE:
-            st.error("Audio recording is not available in this environment")
-            return False
-            
-        self.recording = True
-        self.audio_data = []
-        
-        try:
-            # Start the input stream
-            self.stream = sd.InputStream(
-                samplerate=self.sample_rate,
-                channels=self.channels,
-                callback=self.callback
-            )
-            self.stream.start()
-            return True
-        except Exception as e:
-            st.error(f"Error starting audio recording: {str(e)}")
-            return False
-    
-    def stop_recording(self):
-        """Stop recording and return the audio data"""
-        if not AUDIO_AVAILABLE:
-            return None
-            
-        if self.stream:
-            self.recording = False
-            self.stream.stop()
-            self.stream.close()
-            return self.get_wav_data()
-        return None
-    
-    def callback(self, indata, frames, time, status):
-        """Callback for audio stream"""
-        if self.recording:
-            self.audio_data.append(indata.copy())
-    
-    def get_wav_data(self):
-        """Convert recorded audio to WAV format"""
-        if not self.audio_data:
-            return None
-        
-        # Combine all audio chunks
-        audio = np.concatenate(self.audio_data)
-        
-        # Convert to WAV format
-        with io.BytesIO() as wav_io:
-            with wave.open(wav_io, 'wb') as wav_file:
-                wav_file.setnchannels(self.channels)
-                wav_file.setsampwidth(2)  # 16-bit audio
-                wav_file.setframerate(self.sample_rate)
-                wav_file.writeframes((audio * 32767).astype(np.int16).tobytes())
-            return wav_io.getvalue()
-
-def transcribe_audio(audio_data, language_code="en-US"):
-    """Transcribe audio using Google Cloud Speech-to-Text"""
-    if not speech_client:
-        return "Speech-to-Text client not available"
-    
-    try:
-        # Create recognition audio
-        audio = speech_v1.RecognitionAudio(content=audio_data)
-        
-        # Configure recognition
-        config = speech_v1.RecognitionConfig(
-            encoding=speech_v1.RecognitionConfig.AudioEncoding.LINEAR16,
-            sample_rate_hertz=16000,
-            language_code=language_code,
-            enable_automatic_punctuation=True,
-            use_enhanced=True,
-            model="default",
-        )
-        
-        # Detect speech
-        response = speech_client.recognize(
-            config=config,
-            audio=audio
-        )
-        
-        # Get transcription
-        if response.results:
-            transcript = response.results[0].alternatives[0].transcript
-            return transcript
-        else:
-            return "No speech detected"
-        
-    except Exception as e:
-        return f"Error transcribing audio: {str(e)}"
-
-def get_ai_response(text, language="English"):
-    """Get response from Gemini"""
-    if not model:
-        return "AI model not available. Please check your GOOGLE_API_KEY."
-    
-    try:
-        # Simplified prompt
-        if language == "English":
-            prompt = text
-        else:
-            prompt = f"Please respond in {language} to this question: {text}"
-        
-        # Generate response with specific configuration
-        generation_config = genai.types.GenerationConfig(
-            max_output_tokens=150,
-            temperature=0.7,
-        )
-        
-        response = model.generate_content(
-            prompt,
-            generation_config=generation_config
-        )
-        
-        # Check if response was blocked or empty
-        if not response.text:
-            if hasattr(response, 'prompt_feedback'):
-                return f"Response blocked due to safety filters: {response.prompt_feedback}"
-            else:
-                return "Empty response received from AI model."
-        
-        return response.text.strip()
-        
-    except Exception as e:
-        # Return the actual error for debugging
-        error_msg = str(e)
-        return f"AI Error: {error_msg}"
-
-def text_to_speech(text, language_code="en-US", voice_name="en-US-Studio-O"):
-    """Convert text to speech using Google Cloud TTS"""
-    if not tts_client:
-        return None
-    
-    try:
-        # Configure voice
-        voice = texttospeech.VoiceSelectionParams(
-            language_code=language_code,
-            name=voice_name,
-            ssml_gender=texttospeech.SsmlVoiceGender.FEMALE
-        )
-        
-        # Configure audio
-        audio_config = texttospeech.AudioConfig(
-            audio_encoding=texttospeech.AudioEncoding.MP3,
-            speaking_rate=1.0,
-            pitch=0.0
-        )
-        
-        # Generate speech
-        synthesis_input = texttospeech.SynthesisInput(text=text)
-        response = tts_client.synthesize_speech(
-            input=synthesis_input,
-            voice=voice,
-            audio_config=audio_config
-        )
-        
-        # Save to temporary file
-        with tempfile.NamedTemporaryFile(delete=False, suffix=".mp3") as temp_audio:
-            temp_audio.write(response.audio_content)
-            return temp_audio.name
-            
-    except Exception as e:
-        return None
-
 def initialize_session_state():
-    if "recorder" not in st.session_state:
-        st.session_state.recorder = AudioRecorder()
     if "is_recording" not in st.session_state:
         st.session_state.is_recording = False
     if "audio_file" not in st.session_state:
@@ -258,6 +77,57 @@ def initialize_session_state():
 
 def main():
     initialize_session_state()
+    
+    # Add JavaScript for audio recording
+    st.markdown("""
+        <script>
+        let mediaRecorder;
+        let audioChunks = [];
+        
+        async function startRecording() {
+            try {
+                const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+                mediaRecorder = new MediaRecorder(stream);
+                audioChunks = [];
+                
+                mediaRecorder.ondataavailable = (event) => {
+                    audioChunks.push(event.data);
+                };
+                
+                mediaRecorder.onstop = async () => {
+                    const audioBlob = new Blob(audioChunks, { type: 'audio/wav' });
+                    const reader = new FileReader();
+                    reader.readAsDataURL(audioBlob);
+                    reader.onloadend = function() {
+                        const base64Audio = reader.result.split(',')[1];
+                        window.parent.postMessage({ type: 'audioData', data: base64Audio }, '*');
+                    }
+                };
+                
+                mediaRecorder.start();
+                return true;
+            } catch (err) {
+                console.error('Error accessing microphone:', err);
+                return false;
+            }
+        }
+        
+        function stopRecording() {
+            if (mediaRecorder && mediaRecorder.state !== 'inactive') {
+                mediaRecorder.stop();
+                mediaRecorder.stream.getTracks().forEach(track => track.stop());
+            }
+        }
+        
+        window.addEventListener('message', function(event) {
+            if (event.data.type === 'startRecording') {
+                startRecording();
+            } else if (event.data.type === 'stopRecording') {
+                stopRecording();
+            }
+        });
+        </script>
+    """, unsafe_allow_html=True)
     
     # Sidebar for voice assistant
     with st.sidebar:
@@ -305,32 +175,20 @@ def main():
                 if not st.session_state.is_recording:
                     # Start recording
                     st.session_state.is_recording = True
-                    st.session_state.recorder.start_recording()
+                    st.markdown("""
+                        <script>
+                        window.parent.postMessage({ type: 'startRecording' }, '*');
+                        </script>
+                    """, unsafe_allow_html=True)
                     st.rerun()
                 else:
-                    # Stop recording and process silently
+                    # Stop recording
                     st.session_state.is_recording = False
-                    audio_data = st.session_state.recorder.stop_recording()
-                    
-                    if audio_data:
-                        # Get language settings
-                        lang_code = LANGUAGES[st.session_state.selected_language]["code"]
-                        voice_name = LANGUAGES[st.session_state.selected_language]["voice"]
-                        
-                        # Process voice silently in background
-                        # Convert speech to text
-                        text = transcribe_audio(audio_data, lang_code)
-                        
-                        if text and text != "No speech detected":
-                            # Get AI response
-                            response = get_ai_response(text, st.session_state.selected_language)
-                            st.session_state.last_response = response
-                            
-                            # Generate speech
-                            audio_file = text_to_speech(response, lang_code, voice_name)
-                            
-                            if audio_file:
-                                st.session_state.audio_file = audio_file
+                    st.markdown("""
+                        <script>
+                        window.parent.postMessage({ type: 'stopRecording' }, '*');
+                        </script>
+                    """, unsafe_allow_html=True)
                     st.rerun()
         
         # Status indicator in the center
@@ -391,8 +249,6 @@ def main():
             st.success("Analysis Complete")
             st.markdown("### Analysis Result")
             st.write(result)
-    
-   
 
 if __name__ == "__main__":
     main()
