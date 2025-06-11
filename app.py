@@ -361,7 +361,7 @@ def main():
     )
     
     # Analyze button logic
-    if canvas_result.image_data is not None and st.button("Analyze Whiteboard"):
+    if canvas_result.image_data is not None and st.button("Analyze"):
         with st.spinner("Analyzing your drawing..."):
             # Convert canvas image data to PIL Image
             image = Image.fromarray((canvas_result.image_data * 255).astype(np.uint8))
