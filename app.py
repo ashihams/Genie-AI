@@ -32,6 +32,7 @@ GOOGLE_CREDENTIALS_FILE = os.getenv("GOOGLE_CREDENTIALS_FILE")
 speech_client = None
 tts_client = None
 model = None
+audio_available = False
 
 # Initialize clients silently
 try:
@@ -49,6 +50,14 @@ try:
         model = genai.GenerativeModel('gemini-1.5-flash')
 except Exception:
     pass
+
+# Check if audio is available
+try:
+    import sounddevice as sd
+    sd.get_portaudio_version()
+    audio_available = True
+except Exception:
+    audio_available = False
 
 # Constants
 LANGUAGES = {
@@ -81,7 +90,7 @@ def generate_solution_response(problem, selected_language, model):
 
 def initialize_session_state():
     """Initialize all session state variables"""
-    if "recorder" not in st.session_state:
+    if "recorder" not in st.session_state and audio_available:
         st.session_state.recorder = AudioRecorder()
     if "whiteboard" not in st.session_state:
         st.session_state.whiteboard = Whiteboard()
@@ -162,88 +171,98 @@ def main():
         # Voice Assistant Section
         st.markdown("### 🎤 Voice Assistant")
         
-        # Google Assistant-like button styling
-        button_style = """
-            <style>
-            div.stButton > button {
-                border-radius: 50%;
-                height: 80px;
-                width: 80px;
-                font-size: 24px;
-                display: flex;
-                align-items: center;
-                justify-content: center;
-                margin: 0 auto;
-                background-color: #4285F4;
-                color: white;
-                border: none;
-            }
-            div.stButton > button:hover {
-                background-color: #3367D6;
-                border: none;
-            }
-            div.stButton > button:active {
-                background-color: #ea4335;
-            }
-            </style>
-        """
-        st.markdown(button_style, unsafe_allow_html=True)
-        
-        col1, col2, col3 = st.columns([1, 1, 1])
-        with col2:
-            button_label = "🎤" if not st.session_state.is_recording else "⏹️"
-            if st.button(button_label, key="sidebar_toggle_recording"):
-                if not st.session_state.is_recording:
-                    # Start recording
-                    st.session_state.is_recording = True
-                    st.session_state.recorder.start_recording()
-                    st.rerun()
-                else:
-                    # Stop recording and process
-                    st.session_state.is_recording = False
-                    audio_data = st.session_state.recorder.stop_recording()
-                    
-                    if audio_data:
-                        # Get language settings
-                        lang_code = LANGUAGES[st.session_state.selected_language]["code"]
-                        voice_name = LANGUAGES[st.session_state.selected_language]["voice"]
-                        
-                        # Convert speech to text
-                        text = transcribe_audio(audio_data, lang_code, speech_client)
-                        
-                        if text and text != "No speech detected":
-                            # Add to conversation history
-                            st.session_state.conversation_history.append({
-                                "role": "student",
-                                "content": text,
-                                "timestamp": datetime.now()
-                            })
+        if not audio_available:
+            st.warning("🎤 Voice features are not available in this environment. Please use text input instead.")
+        else:
+            # Google Assistant-like button styling
+            button_style = """
+                <style>
+                div.stButton > button {
+                    border-radius: 50%;
+                    height: 80px;
+                    width: 80px;
+                    font-size: 24px;
+                    display: flex;
+                    align-items: center;
+                    justify-content: center;
+                    margin: 0 auto;
+                    background-color: #4285F4;
+                    color: white;
+                    border: none;
+                }
+                div.stButton > button:hover {
+                    background-color: #3367D6;
+                    border: none;
+                }
+                div.stButton > button:active {
+                    background-color: #ea4335;
+                }
+                </style>
+            """
+            st.markdown(button_style, unsafe_allow_html=True)
+            
+            col1, col2, col3 = st.columns([1, 1, 1])
+            with col2:
+                button_label = "🎤" if not st.session_state.is_recording else "⏹️"
+                if st.button(button_label, key="sidebar_toggle_recording"):
+                    if not st.session_state.is_recording:
+                        try:
+                            # Start recording
+                            st.session_state.is_recording = True
+                            st.session_state.recorder.start_recording()
+                            st.rerun()
+                        except Exception as e:
+                            st.error("Failed to start recording. Please try using text input instead.")
+                            st.session_state.is_recording = False
+                    else:
+                        try:
+                            # Stop recording and process
+                            st.session_state.is_recording = False
+                            audio_data = st.session_state.recorder.stop_recording()
                             
-                            # Get tutoring context
-                            context = f"Subject: {st.session_state.current_subject}, Topic: {st.session_state.current_topic}, Level: {st.session_state.difficulty_level}"
-                            if st.session_state.current_problem:
-                                context += f"\nCurrent Problem: {st.session_state.current_problem[:200]}..."
-                            
-                            # Get AI response
-                            response = get_ai_response(text, st.session_state.selected_language, model)
-                            st.session_state.last_response = response
-                            
-                            # Add to conversation history
-                            st.session_state.conversation_history.append({
-                                "role": "tutor",
-                                "content": response,
-                                "timestamp": datetime.now()
-                            })
-                            
-                            # Generate speech
-                            audio_file = text_to_speech(response, lang_code, voice_name, tts_client)
-                            if audio_file:
-                                st.session_state.audio_file = audio_file
-                    st.rerun()
-        
-        # Status indicator
-        status_text = "🔴 Listening..." if st.session_state.is_recording else "🎤 Tap to speak"
-        st.markdown(f"<div style='text-align: center; margin-top: 10px; font-size: 14px; color: #666;'>{status_text}</div>", unsafe_allow_html=True)
+                            if audio_data:
+                                # Get language settings
+                                lang_code = LANGUAGES[st.session_state.selected_language]["code"]
+                                voice_name = LANGUAGES[st.session_state.selected_language]["voice"]
+                                
+                                # Convert speech to text
+                                text = transcribe_audio(audio_data, lang_code, speech_client)
+                                
+                                if text and text != "No speech detected":
+                                    # Add to conversation history
+                                    st.session_state.conversation_history.append({
+                                        "role": "student",
+                                        "content": text,
+                                        "timestamp": datetime.now()
+                                    })
+                                    
+                                    # Get tutoring context
+                                    context = f"Subject: {st.session_state.current_subject}, Topic: {st.session_state.current_topic}, Level: {st.session_state.difficulty_level}"
+                                    if st.session_state.current_problem:
+                                        context += f"\nCurrent Problem: {st.session_state.current_problem[:200]}..."
+                                    
+                                    # Get AI response
+                                    response = get_ai_response(text, st.session_state.selected_language, model)
+                                    st.session_state.last_response = response
+                                    
+                                    # Add to conversation history
+                                    st.session_state.conversation_history.append({
+                                        "role": "tutor",
+                                        "content": response,
+                                        "timestamp": datetime.now()
+                                    })
+                                    
+                                    # Generate speech
+                                    audio_file = text_to_speech(response, lang_code, voice_name, tts_client)
+                                    if audio_file:
+                                        st.session_state.audio_file = audio_file
+                        except Exception as e:
+                            st.error("Failed to process audio. Please try using text input instead.")
+                        st.rerun()
+            
+            # Status indicator
+            status_text = "🔴 Listening..." if st.session_state.is_recording else "🎤 Tap to speak"
+            st.markdown(f"<div style='text-align: center; margin-top: 10px; font-size: 14px; color: #666;'>{status_text}</div>", unsafe_allow_html=True)
         
         # Add some spacing
         st.markdown("<br>", unsafe_allow_html=True)
@@ -252,7 +271,8 @@ def main():
         if st.session_state.last_response and st.session_state.audio_file:
             st.markdown("**🧠 Tutor Response:**")
             st.markdown(f"<div style='background-color: #f0f2f6; padding: 10px; border-radius: 10px; margin: 10px 0; font-size: 14px;'>{st.session_state.last_response}</div>", unsafe_allow_html=True)
-            st.audio(st.session_state.audio_file, format="audio/mp3", autoplay=True)
+            if audio_available:
+                st.audio(st.session_state.audio_file, format="audio/mp3", autoplay=True)
     
     # Main content area
     st.markdown("<h1 style='text-align: center; color: #1E88E5; margin-bottom: 10px;'>🧠 Genie AI - Omni Tutor</h1>", unsafe_allow_html=True)
